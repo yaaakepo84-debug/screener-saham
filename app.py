@@ -1,257 +1,1145 @@
+import html
+import time
+import numpy as np
+import pandas as pd
 import streamlit as st
 import yfinance as yf
-import pandas as pd
+import requests
 
-# --- PAGE CONFIG ---
-st.set_page_config(page_title="IDX Stock Dashboard PRO", layout="wide")
+# =========================================================
+# PAGE
+# =========================================================
 
-# Styling Dark Mode Dashboard
+st.set_page_config(
+    page_title="IDX Smart Screener",
+    page_icon="📊",
+    layout="wide",
+)
+
+# =========================================================
+# CSS
+# =========================================================
+
 st.markdown("""
 <style>
-    .stApp { background-color: #0e1117; color: #ffffff; }
-    .card-box {
-        background-color: #161b22;
-        border: 1px solid #30363d;
-        border-radius: 12px;
-        padding: 16px;
-        margin-bottom: 16px;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-    }
-    .badge-score {
-        background-color: #1f6feb;
-        color: white;
-        padding: 4px 10px;
-        border-radius: 20px;
-        font-weight: bold;
-        float: right;
-    }
-    .green-text { color: #3fb950; font-weight: bold; }
-    .red-text { color: #f85149; font-weight: bold; }
-    .metric-container {
-        display: flex;
-        justify-content: space-between;
-        background: #0d1117;
-        padding: 8px;
-        border-radius: 8px;
-        margin: 8px 0;
-        font-size: 0.85rem;
-    }
+
+.stApp {
+    background: #070b12;
+}
+
+.block-container {
+    max-width: 1500px;
+    padding-top: 1rem;
+}
+
+.hero {
+    background: linear-gradient(135deg,#101827,#0b111c);
+    border: 1px solid #202c3d;
+    border-radius: 18px;
+    padding: 24px 28px;
+    margin-bottom: 18px;
+}
+
+.hero h1 {
+    margin: 0;
+    font-size: 32px;
+}
+
+.hero p {
+    color: #8e9bad;
+    margin: 6px 0 0;
+}
+
+.badge {
+    display: inline-block;
+    margin: 12px 6px 0 0;
+    padding: 5px 10px;
+    border-radius: 999px;
+    background: #142235;
+    color: #8fc7ff;
+    border: 1px solid #263850;
+    font-size: 11px;
+}
+
+.card {
+    background: #0d141f;
+    border: 1px solid #1d2a3a;
+    border-radius: 16px;
+    padding: 16px;
+    margin-bottom: 14px;
+}
+
+.ticker {
+    font-size: 21px;
+    font-weight: 800;
+    color: #f3f7fb;
+}
+
+.setup {
+    margin-left: 6px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: #172435;
+    color: #9bcfff;
+    font-size: 9px;
+    font-weight: 800;
+}
+
+.price {
+    font-size: 18px;
+    font-weight: 750;
+    margin-top: 5px;
+}
+
+.pos {
+    color: #4ade80;
+}
+
+.neg {
+    color: #fb7185;
+}
+
+.score-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 12px 0;
+}
+
+.score {
+    font-size: 27px;
+    font-weight: 900;
+    min-width: 42px;
+}
+
+.bar {
+    height: 7px;
+    background: #182231;
+    border-radius: 99px;
+    overflow: hidden;
+}
+
+.fill {
+    height: 100%;
+    border-radius: 99px;
+}
+
+.grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 7px;
+}
+
+.box {
+    background: #111a27;
+    border-radius: 9px;
+    padding: 9px;
+}
+
+.entry {
+    border-left: 3px solid #55c2ff;
+}
+
+.tp {
+    border-left: 3px solid #4ade80;
+}
+
+.sl {
+    border-left: 3px solid #fb7185;
+}
+
+.label {
+    color: #718096;
+    font-size: 9px;
+    font-weight: 700;
+}
+
+.value {
+    font-size: 14px;
+    font-weight: 800;
+    margin-top: 2px;
+}
+
+.info {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.info div {
+    background: #101823;
+    border-radius: 8px;
+    padding: 7px;
+}
+
+.info small {
+    color: #718096;
+    font-size: 8px;
+}
+
+.info b {
+    display: block;
+    font-size: 11px;
+    margin-top: 2px;
+}
+
+.reason {
+    border-top: 1px solid #1b2735;
+    margin-top: 10px;
+    padding-top: 9px;
+    color: #a8b4c5;
+    font-size: 11px;
+    line-height: 1.5;
+}
+
+.note {
+    padding: 11px 14px;
+    border-radius: 10px;
+    margin-bottom: 14px;
+    background: #211c0f;
+    border: 1px solid #55451b;
+    color: #d9c78b;
+    font-size: 12px;
+}
+
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 PRO Stock Dashboard (Auto Candle SL/TP)")
-st.caption("SL diset dari Low Candle | TP diset dari High Candle | Full IDX & IPO Screener")
 
-# --- MASTER DAFTAR TICKER IDX LENGKAP (INCL. IPO TERBARU) ---
-ALL_IDX_TICKERS = [
-    # IPO Terbaru & Saham Ramai
-    "WBSA", "CUAN", "BREN", "AMMN", "PANI", "HUMI", "STRK", "DOOH", "KAYU", "GTRA",
-    "FWCT", "NINE", "OASA", "VKTR", "BIPI", "COAL", "MEDC", "BRMS", "PSAB", "BUMI",
-    "AADI", "ADMR", "MBSS", "LSIP", "MLPT", "JSPT", "GOTO", "BSBK", "WIFI", "ANTM",
-    "BBCA", "BBRI", "BMRI", "BBNI", "ASII", "TLKM", "PGAS", "ENRG", "DEWA", "RAJA",
-    "CGAS", "TOSK", "SMGA", "MSJA", "ALII", "MKAP", "RGAS", "BHER", "MREI", "SAGA",
-    "NICE", "NEST", "BABY", "HYGN", "AREA", "SOLA", "PART", "BATR", "MANG", "FMAX",
-    # Saham IDX Reguler
-    "AALI", "ABBA", "ABDA", "ABMM", "ACES", "ACST", "ADEL", "ADHI", "ADCP", "ADRO", 
-    "AGAR", "AGII", "AGRO", "AGRS", "AHAP", "AIMS", "AISA", "AKRA", "AKSI", "ALDO", 
-    "AMAG", "AMAR", "AMFG", "AMIN", "AMRT", "ANDI", "APEX", "APIC", "APLN", "ARCI", 
-    "ARNA", "ARTA", "ASGR", "ASJT", "ASRI", "ASRM", "AUTO", "BABP", "BACA", "BAJA", 
-    "BBHI", "BBKP", "BBLD", "BBMD", "BBRM", "BBTN", "BCAT", "BCIC", "BDMN", "BEBS", 
-    "BEST", "BFIN", "BGTG", "BHIT", "BIRD", "BISI", "BJBR", "BJTM", "BKSL", "BKSW", 
-    "BLTA", "BLTZ", "BMAS", "BMTR", "BNBR", "BNGA", "BNII", "BNLI", "BOGA", "BOLT", 
-    "BOSS", "BSDE", "BSIM", "BTPS", "BVIC", "BRPT", "BUKA", "CASA", "CAST", "CEKA", 
-    "CENT", "CFIN", "CINT", "CITA", "CITY", "CLPI", "CMNP", "CMRY", "CNTX", "CPIN", 
-    "CPRO", "CSAP", "CSIS", "CSRA", "CTRA", "DART", "DGGN", "DILD", "DIVA", "DKFT", 
-    "DLTA", "DMAS", "DNAR", "DNET", "DOID", "DRMA", "DSFI", "DSNG", "DSSD", "DUTI", 
-    "DVLA", "ECII", "ELSA", "EMTK", "EPMT", "ERAA", "ERTX", "ESSA", "ESTI", "ETWA", 
-    "EXCL", "FAST", "FASW", "FIRE", "FMII", "FORU", "FPNI", "FREN", "GAAA", "GDST", 
-    "GEMS", "GGRM", "GIAA", "GJTL", "GLOB", "GLVA", "GOOD", "GPRA", "GSMF", "GTBO", 
-    "GWSA", "GZCO", "HATM", "HDFA", "HDTX", "HEAL", "HERO", "HEXA", "HITS", "HMSP", 
-    "HOKI", "HOME", "HOPE", "HRTA", "HRUM", "IATA", "IBST", "ICBP", "ICON", "IDPR", 
-    "IGAR", "IIKP", "IKAI", "IKBI", "IMAS", "INAF", "INCF", "INCI", "INDF", "INDY", 
-    "INKP", "INPC", "INPP", "INRU", "INTD", "INTP", "IPCC", "IPCM", "IPOL", "IPTV", 
-    "IRRA", "ISAT", "ISSP", "ITMG", "JARR", "JAST", "JECC", "JKSW", "JPFA", "JRPT", 
-    "JSMR", "JTPE", "KBLI", "KBLM", "KBAG", "KARW", "KDSI", "KIAS", "KICI", "KIJA", 
-    "KKGI", "KLBF", "KMDS", "KOBX", "KOIN", "KAEF", "KPAL", "KPIG", "KRAS", "KREN", 
-    "LCGP", "LEAD", "LION", "LMPI", "LMSH", "LPCK", "LPGI", "LPLI", "LPKR", "LPCR", 
-    "LRNA", "LTLS", "LUCK", "MAIN", "MAMI", "MAPA", "MAPI", "MARI", "MASA", "MBAP", 
-    "MBTO", "MCAS", "MCOL", "MDKA", "MDKI", "MDLN", "MDRN", "MEGA", "MERK", "METR", 
-    "MFIN", "MIKA", "MINA", "MIRA", "MITI", "MKPI", "MLBI", "MLIA", "MNCN", "MPMX", 
-    "MPPA", "MRAT", "MSIN", "MTDL", "MTFN", "MTLA", "MTPS", "MYOR", "MYRX", "MYTX", 
-    "NELY", "NFCX", "NICK", "NICL", "NIKL", "NIPS", "NIRO", "NISP", "NOBU", "NRCA", 
-    "OBMD", "PALM", "PANR", "PANS", "PBID", "PBRX", "PDES", "PEHA", "PGJO", "PGLI", 
-    "PJAA", "PKPK", "PLIN", "PMJS", "PNBN", "PNBS", "PNIN", "PNLF", "POLI", "POLL", 
-    "POLY", "POOL", "PORT", "POWR", "PPGL", "PPRO", "PRDA", "PRIM", "PSDN", "PSGO", 
-    "PTBA", "PTDU", "PTPP", "PTRO", "PTSN", "PUDP", "PWON", "PYFA", "RAAM", "RALS", 
-    "RANC", "RBMS", "RDTX", "REAL", "RELI", "RICY", "RIGS", "RIMO", "ROTI", "RODA", 
-    "SAME", "SAMF", "SAPX", "SBAT", "SCCO", "SCMA", "SCNP", "SDMU", "SDPC", "SFA", 
-    "SGER", "SGMW", "SGRO", "SHID", "SILO", "SIMP", "SIPD", "SKBM", "SKLT", "SKYB", 
-    "SLIS", "SMBR", "SMCB", "SMDM", "SMDR", "SMGR", "SMKL", "SMMA", "SMRA", "SMRU", 
-    "SMSM", "SOCI", "SOFA", "SOHO", "SONA", "SOSI", "SRIL", "SRSN", "SRTG", "SSIA", 
-    "SSMS", "SSSS", "SSTC", "STAA", "STAT", "STTP", "SUGI", "SULI", "SUPR", "SURE", 
-    "TALF", "TARA", "TAXI", "TBIG", "TBLA", "TBMS", "TCID", "TCMM", "TELE", "TFCO", 
-    "TGRA", "TIFA", "TINS", "TIRA", "TKIM", "TMAS", "TMPO", "TNCA", "TOBA", "TOTL", 
-    "TOWR", "TPIA", "TPMA", "TRAM", "TRIM", "TRIN", "TRIO", "TRST", "TRUK", "TSPC", 
-    "TUGU", "ULTJ", "UNIC", "UNIQ", "UNVR", "URBN", "VRNA", "WICC", "WIIM", "WINS", 
-    "WMPP", "WOOD", "WOWS", "WSBP", "WSKT", "WTON", "YPAS", "YULE", "ZBRA", "ZINC", "ZONE"
-]
+# =========================================================
+# IDX DYNAMIC UNIVERSE
+# =========================================================
 
-# Unikkan Ticker
-ALL_TICKERS = list(dict.fromkeys(ALL_IDX_TICKERS))
+IDX_URL = (
+    "https://www.idx.co.id/"
+    "primary/ListedCompany/GetCompanyProfiles"
+)
 
-# --- SIDEBAR ---
-st.sidebar.header("⚙️ Setting Scan Saham")
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 "
+        "(Linux; Android 14) "
+        "AppleWebKit/537.36 "
+        "Chrome/128.0 Mobile Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://www.idx.co.id/",
+    "Origin": "https://www.idx.co.id",
+}
 
-# Input Saham Manual Jika Ada Saham Hari Ini Yang Baru Listing
-custom_input = st.sidebar.text_input("Tambah Saham Spesifik (Pisah Koma):", value="")
-if custom_input:
-    custom_list = [x.strip().upper() for x in custom_input.split(",") if x.strip()]
-    FINAL_TICKERS = list(dict.fromkeys(custom_list + ALL_TICKERS))
-else:
-    FINAL_TICKERS = ALL_TICKERS
 
-scan_limit = st.sidebar.slider("Jumlah Saham Yang Di-scan:", min_value=20, max_value=len(FINAL_TICKERS), value=150, step=20)
-min_price = st.sidebar.number_input("Harga Minimum (Rp):", value=50, step=10)
-max_price = st.sidebar.number_input("Harga Maksimum (Rp):", value=3000, step=100)
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_idx_universe():
 
-@st.cache_data(ttl=300)
-def fetch_data(symbol):
-    ticker = f"{symbol}.JK" if not symbol.endswith(".JK") else symbol
+    rows = []
+
+    start = 0
+    length = 1000
+
+    # curl_cffi dipakai kalau tersedia karena
+    # website IDX kadang menolak request biasa.
     try:
-        df = yf.download(ticker, period="3mo", interval="1d", progress=False)
-        if df.empty or len(df) < 3:
-            return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df['Vol_MA'] = df['Volume'].rolling(min(10, len(df))).mean()
-        df['Change_%'] = df['Close'].pct_change() * 100
-        return df
+        from curl_cffi import requests as curl_requests
+        use_curl = True
     except Exception:
+        curl_requests = None
+        use_curl = False
+
+    while True:
+
+        params = {
+            "start": start,
+            "length": length,
+            "code": ""
+        }
+
+        if use_curl:
+
+            response = curl_requests.get(
+                IDX_URL,
+                params=params,
+                headers=HEADERS,
+                timeout=25,
+                impersonate="chrome"
+            )
+
+        else:
+
+            response = requests.get(
+                IDX_URL,
+                params=params,
+                headers=HEADERS,
+                timeout=25
+            )
+
+        response.raise_for_status()
+
+        payload = response.json()
+
+        batch = payload.get("data", [])
+
+        if not batch:
+            break
+
+        rows.extend(batch)
+
+        try:
+            total = int(
+                payload.get(
+                    "recordsTotal",
+                    len(rows)
+                )
+            )
+        except Exception:
+            total = len(rows)
+
+        if len(rows) >= total:
+            break
+
+        if len(batch) < length:
+            break
+
+        start += length
+
+        # pengaman
+        if start > 10000:
+            break
+
+    tickers = []
+
+    for row in rows:
+
+        if not isinstance(row, dict):
+            continue
+
+        code = None
+
+        for key in [
+            "KodeEmiten",
+            "Kode_Emiten",
+            "code",
+            "Code",
+            "Kode"
+        ]:
+
+            if key in row:
+                code = row[key]
+                break
+
+        if code is None:
+            continue
+
+        code = str(code).strip().upper()
+
+        if (
+            2 <= len(code) <= 6
+            and code.replace(".", "").isalnum()
+        ):
+            tickers.append(code)
+
+    tickers = list(dict.fromkeys(tickers))
+
+    # PENTING:
+    # kalau IDX cuma mengembalikan sebagian,
+    # jangan scan dan mengaku semua IDX.
+    if len(tickers) < 500:
+
+        raise RuntimeError(
+            f"IDX hanya mengembalikan "
+            f"{len(tickers)} ticker. "
+            f"Scanner dihentikan agar "
+            f"tidak menggunakan universe yang tidak lengkap."
+        )
+
+    return tickers
+
+
+# =========================================================
+# TIMEFRAME
+# =========================================================
+
+TIMEFRAMES = {
+
+    "Daily": (
+        "1y",
+        "1d"
+    ),
+
+    "1H": (
+        "180d",
+        "1h"
+    ),
+
+    "15M": (
+        "60d",
+        "15m"
+    ),
+
+    "5M": (
+        "30d",
+        "5m"
+    )
+}
+
+
+# =========================================================
+# DOWNLOAD DATA
+# =========================================================
+
+@st.cache_data(ttl=300, show_spinner=False)
+def download_batch(
+    symbols,
+    period,
+    interval
+):
+
+    yahoo_symbols = [
+        f"{symbol}.JK"
+        for symbol in symbols
+    ]
+
+    try:
+
+        data = yf.download(
+            tickers=list(yahoo_symbols),
+            period=period,
+            interval=interval,
+            auto_adjust=False,
+            group_by="ticker",
+            threads=False,
+            progress=False
+        )
+
+        if data is None or data.empty:
+            return None
+
+        return data
+
+    except Exception:
+
         return None
 
-if st.button(f"🚀 Scan Dashboard ({scan_limit} Saham BEI)", use_container_width=True):
-    results_mom = []
-    results_breakout = []
-    results_value = []
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    selected_tickers = FINAL_TICKERS[:scan_limit]
-    total_tickers = len(selected_tickers)
-    
-    for i, symbol in enumerate(selected_tickers):
-        status_text.text(f"Scanning ({i+1}/{total_tickers}): {symbol}")
-        progress_bar.progress((i + 1) / total_tickers)
-        
-        df = fetch_data(symbol)
-        if df is None:
-            continue
-        
-        latest = df.iloc[-1]
-        prev = df.iloc[-2]
-        prev2 = df.iloc[-3] if len(df) > 2 else prev
-        
-        close = float(latest['Close'])
-        change = float(latest['Change_%']) if pd.notnull(latest['Change_%']) else 0.0
-        vol = int(latest['Volume'])
-        vol_ma = float(latest['Vol_MA']) if latest['Vol_MA'] > 0 else 1
-        vol_ratio = vol / vol_ma
-        
-        if not (min_price <= close <= max_price):
-            continue
-            
-        # HITUNG SL & TP OTOMATIS DARI CANDLE (Support & Resistance)
-        # SL: Gunakan Low candle kemarin (atau Low 2 hari terakhir mana yang paling rendah)
-        sl_price = int(min(float(prev['Low']), float(latest['Low'])))
-        # Jika SL ternyata sama atau lebih tinggi dari close, pasang 2% di bawah close sebagai buffer
-        if sl_price >= close:
-            sl_price = int(close * 0.98)
-            
-        # TP1: Gunakan High candle kemarin/resistance terdekat
-        tp1_price = int(max(float(prev['High']), float(latest['High'])))
-        # Jika TP ternyata kurang dari close, proyeksi TP ke atas berdasarkan resisten sebelumnya
-        if tp1_price <= close:
-            tp1_price = int(close * 1.04)
-            
-        card_data = {
-            "ticker": symbol.replace(".JK", ""),
-            "close": int(close),
-            "change": round(change, 2),
-            "vol_ratio": round(vol_ratio, 2),
-            "tp1": tp1_price,
-            "sl": sl_price,
-            "entry": f"{int(sl_price + (close - sl_price)*0.5)}-{int(close)}"
-        }
-        
-        # Pengelompokan Kategori Card
-        if change > 2 and vol_ratio > 1.2:
-            card_data["score"] = int(70 + (change * 2))
-            card_data["reason"] = f"Volume Spike ({round(vol_ratio,1)}x) & Momentum Naik."
-            results_mom.append(card_data)
-        elif close > float(prev['High']):
-            card_data["score"] = int(65 + (vol_ratio * 5))
-            card_data["reason"] = f"Breakout Candle High Kemarin (Rp {int(prev['High'])})."
-            results_breakout.append(card_data)
+
+def extract_symbol(
+    raw,
+    symbol
+):
+
+    if raw is None or raw.empty:
+        return None
+
+    yahoo_symbol = (
+        f"{symbol}.JK"
+    )
+
+    try:
+
+        if isinstance(
+            raw.columns,
+            pd.MultiIndex
+        ):
+
+            level0 = list(
+                raw.columns
+                .get_level_values(0)
+            )
+
+            level1 = list(
+                raw.columns
+                .get_level_values(1)
+            )
+
+            if yahoo_symbol in level0:
+
+                df = raw[
+                    yahoo_symbol
+                ].copy()
+
+            elif yahoo_symbol in level1:
+
+                df = raw.xs(
+                    yahoo_symbol,
+                    axis=1,
+                    level=1
+                ).copy()
+
+            else:
+
+                return None
+
         else:
-            card_data["score"] = int(60 + (vol_ratio * 3))
-            card_data["reason"] = f"Area Konsolidasi Support Candle (Low Rp {sl_price})."
-            results_value.append(card_data)
 
-    status_text.success("✅ Auto-scan Selesai!")
-    progress_bar.empty()
-    
-    st.session_state['data_mom'] = results_mom
-    st.session_state['data_break'] = results_breakout
-    st.session_state['data_val'] = results_value
+            df = raw.copy()
 
-# Helper function render card
+        required = [
+            "Open",
+            "High",
+            "Low",
+            "Close",
+            "Volume"
+        ]
+
+        if not all(
+            x in df.columns
+            for x in required
+        ):
+            return None
+
+        df = df[required].copy()
+
+        for col in required:
+
+            df[col] = pd.to_numeric(
+                df[col],
+                errors="coerce"
+            )
+
+        df = df.dropna()
+
+        if len(df) < 60:
+            return None
+
+        return df
+
+    except Exception:
+
+        return None
+
+
+# =========================================================
+# ANALYSIS ENGINE
+# =========================================================
+
+def analyze_stock(
+    df,
+    symbol,
+    mode,
+    min_price,
+    max_price
+):
+
+    if df is None:
+        return None
+
+    if len(df) < 60:
+        return None
+
+    try:
+
+        close = df["Close"]
+        high = df["High"]
+        low = df["Low"]
+        open_ = df["Open"]
+        volume = df["Volume"]
+
+        # -----------------------------
+        # MA
+        # -----------------------------
+
+        df["MA5"] = (
+            close.rolling(5).mean()
+        )
+
+        df["MA10"] = (
+            close.rolling(10).mean()
+        )
+
+        df["MA20"] = (
+            close.rolling(20).mean()
+        )
+
+        df["MA50"] = (
+            close.rolling(50).mean()
+        )
+
+        # -----------------------------
+        # Volume
+        # -----------------------------
+
+        df["VolMA20"] = (
+            volume.rolling(20).mean()
+        )
+
+        # -----------------------------
+        # ATR
+        # -----------------------------
+
+        prev_close = close.shift(1)
+
+        tr = pd.concat(
+            [
+                high - low,
+                (high - prev_close).abs(),
+                (low - prev_close).abs()
+            ],
+            axis=1
+        ).max(axis=1)
+
+        df["ATR14"] = (
+            tr.rolling(14).mean()
+        )
+
+        # -----------------------------
+        # Support / Resistance
+        # -----------------------------
+
+        df["PrevHigh10"] = (
+            high.shift(1)
+            .rolling(10)
+            .max()
+        )
+
+        df["PrevLow10"] = (
+            low.shift(1)
+            .rolling(10)
+            .min()
+        )
+
+        df["PrevHigh20"] = (
+            high.shift(1)
+            .rolling(20)
+            .max()
+        )
+
+        df["PrevLow20"] = (
+            low.shift(1)
+            .rolling(20)
+            .min()
+        )
+
+        latest = df.iloc[-1]
+        previous = df.iloc[-2]
+
+        price = float(
+            latest["Close"]
+        )
+
+        if not (
+            min_price
+            <= price
+            <= max_price
+        ):
+            return None
+
+        atr = float(
+            latest["ATR14"]
+        )
+
+        vol_ma = float(
+            latest["VolMA20"]
+        )
+
+        if (
+            not np.isfinite(atr)
+            or atr <= 0
+            or vol_ma <= 0
+        ):
+            return None
+
+        vol_ratio = (
+            float(latest["Volume"])
+            / vol_ma
+        )
+
+        change = (
+            price
+            / float(previous["Close"])
+            - 1
+        ) * 100
+
+        ma5 = float(
+            latest["MA5"]
+        )
+
+        ma10 = float(
+            latest["MA10"]
+        )
+
+        ma20 = float(
+            latest["MA20"]
+        )
+
+        ma50 = float(
+            latest["MA50"]
+        )
+
+        support = float(
+            latest["PrevLow10"]
+        )
+
+        resistance10 = float(
+            latest["PrevHigh10"]
+        )
+
+        resistance20 = float(
+            latest["PrevHigh20"]
+        )
+
+        # -----------------------------
+        # Conditions
+        # -----------------------------
+
+        bullish_candle = (
+            float(latest["Close"])
+            >
+            float(latest["Open"])
+        )
+
+        fast_trend = (
+            ma5 > ma10
+            and
+            ma10 > ma20
+        )
+
+        main_trend = (
+            price > ma20
+            and
+            ma20 > ma50
+        )
+
+        breakout = (
+            price > resistance20
+        )
+
+        near_support = (
+            price >= support
+            and
+            (
+                (price - support)
+                / price
+            ) <= 0.03
+        )
+
+        structure_up = (
+            float(latest["High"])
+            >
+            float(latest["PrevHigh10"])
+            and
+            float(latest["Low"])
+            >
+            float(latest["PrevLow10"])
+        )
+
+        # -----------------------------
+        # SCORE
+        # -----------------------------
+
+        score = 0
+
+        reasons = []
+
+        if price > ma20:
+
+            score += 15
+
+            reasons.append(
+                "Harga di atas MA20"
+            )
+
+        if ma20 > ma50:
+
+            score += 15
+
+            reasons.append(
+                "MA20 di atas MA50"
+            )
+
+        if bullish_candle:
+
+            score += 10
+
+            reasons.append(
+                "Candle terakhir bullish"
+            )
+
+        if vol_ratio > 1.0:
+
+            score += 10
+
+            reasons.append(
+                f"Volume {vol_ratio:.2f}x rata-rata"
+            )
+
+        if vol_ratio > 1.5:
+
+            score += 5
+
+            reasons.append(
+                "Volume spike > 1.5x"
+            )
+
+        if breakout:
+
+            score += 15
+
+            reasons.append(
+                "Breakout high 20 periode"
+            )
+
+        if change > 1:
+
+            score += 10
+
+            reasons.append(
+                f"Momentum +{change:.2f}%"
+            )
+
+        if structure_up:
+
+            score += 10
+
+            reasons.append(
+                "Struktur high/low menguat"
+            )
+
+        if near_support:
+
+            score += 10
+
+            reasons.append(
+                "Harga dekat support"
+            )
+
+        score = min(
+            score,
+            100
+        )
+
+        # =================================================
+        # ENTRY
+        # =================================================
+
+        if breakout:
+
+            entry_low = max(
+                resistance20,
+                price - (
+                    0.5 * atr
+                )
+            )
+
+        else:
+
+            entry_low = max(
+                support,
+                price - (
+                    0.5 * atr
+                )
+            )
+
+        entry_high = price
+
+        if entry_low >= entry_high:
+
+            entry_low = (
+                entry_high
+                - 0.5 * atr
+            )
+
+        entry_low = max(
+            1,
+            entry_low
+        )
+
+        entry_mid = (
+            entry_low
+            + entry_high
+        ) / 2
+
+        # =================================================
+        # STOP LOSS
+        # =================================================
+
+        sl = (
+            support
+            - 0.25 * atr
+        )
+
+        if sl >= entry_mid:
+
+            sl = (
+                entry_mid
+                - atr
+            )
+
+        sl = max(
+            1,
+            sl
+        )
+
+        risk = (
+            entry_mid
+            - sl
+        )
+
+        if risk <= 0:
+            return None
+
+        # =================================================
+        # TAKE PROFIT
+        # =================================================
+
+        resistances = sorted(
+            [
+                x
+                for x in [
+                    resistance10,
+                    resistance20
+                ]
+                if x > entry_mid
+            ]
+        )
+
+        # TP1 sekitar 1R
+        tp1 = (
+            entry_mid
+            + risk
+        )
+
+        if resistances:
+
+            nearest = resistances[0]
+
+            if (
+                nearest
+                <
+                entry_mid
+                + 1.25 * risk
+            ):
+
+                tp1 = nearest
+
+        # TP2 sekitar 2R
+        tp2 = (
+            entry_mid
+            + 2 * risk
+        )
+
+        if resistances:
+
+            farthest = resistances[-1]
+
+            if (
+                farthest > tp1
+                and
+                farthest
+                <
+                entry_mid
+                + 3 * risk
+            ):
+
+                tp2 = farthest
+
+        rr1 = (
+            tp1
+            - entry_mid
+        ) / risk
+
+        rr2 = (
+            tp2
+            - entry_mid
+        ) / risk
+
+        # =================================================
+        # SETUP
+        # =================================================
+
+        if (
+            breakout
+            and
+            vol_ratio >= 1.2
+        ):
+
+            setup = "BREAKOUT"
+
+        elif near_support:
+
+            setup = "NEAR SUPPORT"
+
+        elif (
+            main_trend
+            and
+            fast_trend
+        ):
+
+            setup = "MOMENTUM"
+
+        else:
+
+            setup = "WATCH"
+
+        # =================================================
+        # MODE FILTER
+        # =================================================
+
+        if mode == "⚡ Scalping Besok":
+
+            qualifies = (
+                score >= 55
+                and
+                (
+                    vol_ratio >= 1
+                    or breakout
+                    or near_support
+                )
+            )
+
+        else:
+
+            qualifies = (
+                score >= 60
+                and
+                main_trend
+                and
+                (
+                    fast_trend
+                    or structure_up
+                )
+            )
+
+        if not qualifies:
+            return None
+
+        return {
+
+            "ticker": symbol,
+
+            "price": price,
+
+            "change": change,
+
+            "volume": float(
+                latest["Volume"]
+            ),
+
+            "vol_ratio": vol_ratio,
+
+            "ma20": ma20,
+
+            "ma50": ma50,
+
+            "support": support,
+
+            "resistance": resistance10,
+
+            "score": score,
+
+            "setup": setup,
+
+            "entry_low": entry_low,
+
+            "entry_high": entry_high,
+
+            "tp1": tp1,
+
+            "tp2": tp2,
+
+            "sl": sl,
+
+            "rr1": rr1,
+
+            "rr2": rr2,
+
+            "reasons": reasons,
+
+            "frame": df.copy()
+        }
+
+    except Exception:
+
+        return None
+
+
+# =========================================================
+# FORMAT
+# =========================================================
+
+def rp(value):
+
+    return (
+        f"Rp {int(round(value)):,}"
+        .replace(",", ".")
+    )
+
+
 def render_card(item):
-    change_color = "green-text" if item["change"] >= 0 else "red-text"
-    change_sign = "+" if item["change"] >= 0 else ""
-    
-    html = f"""
-    <div class="card-box">
-        <span class="badge-score">{item['score']} SCORE</span>
-        <h3 style="margin:0; color:#58a6ff;">📌 {item['ticker']}</h3>
-        <p style="margin:0; font-size: 1.2rem; font-weight:bold;">
-            Rp {item['close']} <span class="{change_color}">({change_sign}{item['change']}%)</span>
-        </p>
-        
-        <div class="metric-container">
-            <div><b>Area Buy:</b> Rp {item['entry']}</div>
-            <div><b>Vol Spike:</b> {item['vol_ratio']}x</div>
-        </div>
-        
-        <div class="metric-container">
-            <div style="color:#3fb950;"><b>TP (Resisten):</b> Rp {item['tp1']}</div>
-            <div style="color:#f85149;"><b>SL (Support):</b> Rp {item['sl']}</div>
-        </div>
-        
-        <p style="font-size:0.8rem; color:#8b949e; margin-top:8px;">
-            💡 <b>Analisa Candle:</b> {item['reason']}
-        </p>
-    </div>
-    """
-    st.markdown(html, unsafe_allow_html=True)
 
-# --- SHOW DASHBOARD COLUMNS ---
-if 'data_mom' in st.session_state:
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.subheader("⚡ Technical Momentum")
-        st.caption("Volume spike + trending naik pesat")
-        for item in st.session_state['data_mom']:
-            render_card(item)
-            
-    with col2:
-        st.subheader("🚀 Breakout High")
-        st.caption("Tembus High Candle Sebelumnya")
-        for item in st.session_state['data_break']:
-            render_card(item)
-            
-    with col3:
-        st.subheader("💎 Near Support / Base")
-        st.caption("Dekat Low Candle / Support Terdekat")
-        for item in st.session_state['data_val']:
-            render_card(item)
+    score = int(
+        item["score"]
+    )
+
+    if score >= 80:
+
+        color = "#4ade80"
+
+    elif score >= 70:
+
+        color = "#55c2ff"
+
+    else:
+
+        color = "#facc15"
+
+    change = float(
+        item["change"]
+    )
+
+    change_class = (
+        "pos"
+        if change >= 0
+        else "neg"
+    )
+
+    sign = (
+        "+"
+        if change >= 0
+        else ""
+    )
+
+    reasons = ""
+
+    for reason in item["reasons"][:5]:
+
+        reasons += (
+            "<div>✓ "
+            + html.escape(
+                str(reason)
+            )
+            + "</div>"
+        )
+
+    st.markdown(
+        f"""
+        <div class="card">
+
+            <div>
+
+                <span class="ticker">
+                    {html.escape(
+                        item["ticker"]
+                    )}
+                </span>
+
+                <span class="setup">
+                    {html.escape(
+                        item["setup"]
+                    )}
+                </span>
+
+            </div>
+
+            <div class="price">
+
+                {rp(item["price"])}
+
+                <span class="{change_class}">
+                    {sign}{change:.2f}%
+                </span>
+
+            </div>
+
+            <div class="score-row">
+
+                <div
+                    clas
