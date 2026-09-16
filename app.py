@@ -1,3 +1,4 @@
+
 import html
 import time
 import numpy as np
@@ -156,87 +157,169 @@ HEADERS = {
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_idx_universe():
-    rows = []
-    start = 0
-    length = 1000
+    """
+    Ambil universe saham IDX secara dinamis.
 
+    Jalur utama:
+    Yahoo Finance screener -> exchange JKT + region ID.
+    Ini menghindari HTTP 403 dari endpoint IDX yang sering memblokir
+    request server-side seperti Streamlit Cloud.
+
+    Jalur kedua:
+    Endpoint profil perusahaan IDX dengan curl_cffi.
+
+    Scanner TIDAK akan memakai daftar ticker hardcoded yang tidak lengkap.
+    """
+    errors = []
+
+    # =====================================================
+    # 1) PRIMARY: YAHOO FINANCE SCREENER
+    # =====================================================
+    try:
+        from yfinance import EquityQuery
+
+        query = EquityQuery(
+            "and",
+            [
+                EquityQuery("eq", ["region", "id"]),
+                EquityQuery("eq", ["exchange", "JKT"]),
+            ],
+        )
+
+        all_symbols = []
+        offset = 0
+        page_size = 250
+
+        # Yahoo membatasi custom screener maksimal 250 hasil per request.
+        # Empat-lima halaman sudah cukup untuk universe IDX saat ini.
+        for _ in range(10):
+            response = yf.screen(
+                query,
+                offset=offset,
+                size=page_size,
+                sortField="ticker",
+                sortAsc=True,
+            )
+
+            quotes = response.get("quotes", [])
+
+            if not quotes:
+                break
+
+            before = len(all_symbols)
+
+            for quote in quotes:
+                symbol = str(quote.get("symbol", "")).strip().upper()
+
+                if symbol.endswith(".JK"):
+                    symbol = symbol[:-3]
+
+                if (
+                    2 <= len(symbol) <= 6
+                    and symbol.isalnum()
+                ):
+                    all_symbols.append(symbol)
+
+            all_symbols = list(dict.fromkeys(all_symbols))
+
+            # Tidak ada tambahan data -> selesai.
+            if len(all_symbols) == before:
+                break
+
+            # Jika halaman terakhir kurang dari 250, selesai.
+            if len(quotes) < page_size:
+                break
+
+            offset += page_size
+
+        if len(all_symbols) >= 500:
+            return all_symbols
+
+        errors.append(
+            f"Yahoo Finance hanya mengembalikan {len(all_symbols)} ticker."
+        )
+
+    except Exception as error:
+        errors.append(
+            "Yahoo Finance screener: " + str(error)
+        )
+
+    # =====================================================
+    # 2) SECONDARY: IDX ENDPOINT
+    # =====================================================
     try:
         from curl_cffi import requests as curl_requests
-        use_curl = True
-    except Exception:
-        curl_requests = None
-        use_curl = False
 
-    while True:
-        params = {"start": start, "length": length, "code": ""}
+        idx_url = (
+            "https://www.idx.co.id/"
+            "primary/ListedCompany/GetCompanyProfiles"
+        )
 
-        if use_curl:
-            response = curl_requests.get(
-                IDX_URL,
-                params=params,
-                headers=HEADERS,
-                timeout=25,
-                impersonate="chrome",
-            )
-        else:
-            response = requests.get(
-                IDX_URL,
-                params=params,
-                headers=HEADERS,
-                timeout=25,
-            )
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 Chrome/128.0 Safari/537.36"
+            ),
+            "Accept": (
+                "application/json, text/plain, */*"
+            ),
+            "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
+            "Referer": (
+                "https://www.idx.co.id/id/"
+                "perusahaan-tercatat/profil-perusahaan/"
+            ),
+        }
+
+        response = curl_requests.get(
+            idx_url,
+            params={
+                "start": 0,
+                "length": 9999,
+                "code": "",
+            },
+            headers=headers,
+            timeout=30,
+            impersonate="chrome",
+        )
 
         response.raise_for_status()
         payload = response.json()
-        batch = payload.get("data", [])
 
-        if not batch:
-            break
+        rows = payload.get("data", [])
+        tickers = []
 
-        rows.extend(batch)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
 
-        try:
-            total = int(payload.get("recordsTotal", len(rows)))
-        except Exception:
-            total = len(rows)
+            code = str(
+                row.get("KodeEmiten", "")
+            ).strip().upper()
 
-        if len(rows) >= total or len(batch) < length:
-            break
+            if (
+                2 <= len(code) <= 6
+                and code.isalnum()
+            ):
+                tickers.append(code)
 
-        start += length
-        if start > 10000:
-            break
+        tickers = list(dict.fromkeys(tickers))
 
-    tickers = []
+        if len(tickers) >= 500:
+            return tickers
 
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-
-        code = None
-        for key in ("KodeEmiten", "Kode_Emiten", "code", "Code", "Kode"):
-            if key in row:
-                code = row[key]
-                break
-
-        if code is None:
-            continue
-
-        code = str(code).strip().upper()
-
-        if 2 <= len(code) <= 6 and code.replace(".", "").isalnum():
-            tickers.append(code)
-
-    tickers = list(dict.fromkeys(tickers))
-
-    # Jangan pernah mengaku scan semua jika IDX mengembalikan data terlalu sedikit.
-    if len(tickers) < 500:
-        raise RuntimeError(
-            f"IDX hanya mengembalikan {len(tickers)} ticker. "
-            "Scanner dihentikan karena universe belum lengkap."
+        errors.append(
+            f"IDX endpoint hanya mengembalikan {len(tickers)} ticker."
         )
 
-    return tickers
+    except Exception as error:
+        errors.append(
+            "IDX endpoint: " + str(error)
+        )
+
+    raise RuntimeError(
+        "Universe IDX tidak berhasil diambil secara lengkap.\n\n"
+        + "\n".join(errors)
+    )
 
 # =========================================================
 # TIMEFRAME
@@ -746,106 +829,4 @@ batch_size = st.sidebar.select_slider(
     value=25,
 )
 
-if st.sidebar.button(
-    "🔄 Refresh Universe IDX",
-    use_container_width=True,
-):
-    get_idx_universe.clear()
-    st.rerun()
-
-# =========================================================
-# UNIVERSE
-# =========================================================
-
-try:
-    universe = get_idx_universe()
-except Exception as error:
-    st.error("❌ Universe IDX gagal diambil.")
-    st.warning(
-        "Scanner sengaja dihentikan daripada memakai daftar saham "
-        "yang tidak lengkap."
-    )
-    st.code(str(error))
-    st.stop()
-
-st.sidebar.success(
-    f"Universe IDX: {len(universe)} saham"
-)
-
-if mode == "⚡ Scalping Besok":
-    st.markdown(
-        """
-        <div class="note">
-        🌙 <b>SCALPING BESOK:</b>
-        scan malam membuat watchlist.
-        Besok setelah market buka, scan ulang lalu konfirmasi
-        <b>1H → 15M → 5M</b>. Entry/TP/SL adalah level model,
-        bukan jaminan harga.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-# =========================================================
-# SCAN
-# =========================================================
-
-if st.button(
-    f"🚀 SCAN SEMUA {len(universe)} SAHAM IDX",
-    type="primary",
-    use_container_width=True,
-):
-    period, interval = TIMEFRAMES[timeframe]
-
-    results = []
-    charts = {}
-
-    progress = st.progress(0)
-    status = st.empty()
-
-    batches = [
-        universe[i:i + batch_size]
-        for i in range(0, len(universe), batch_size)
-    ]
-
-    total = len(batches)
-
-    for number, batch in enumerate(batches, start=1):
-        status.info(
-            f"Scanning {number}/{total} • "
-            f"{batch[0]} → {batch[-1]}"
-        )
-
-        raw = download_batch(
-            tuple(batch),
-            period,
-            interval,
-        )
-
-        if raw is not None:
-            for symbol in batch:
-                df = extract_symbol(
-                    raw,
-                    symbol,
-                )
-
-                result = analyze_stock(
-                    df,
-                    symbol,
-                    mode,
-                    min_price,
-                    max_price,
-                )
-
-                if result:
-                    results.append(result)
-                    charts[symbol] = (
-                        result["frame"]
-                        .tail(160)
-                        .copy()
-                    )
-
-        progress.progress(number / total)
-        time.sleep(0.05)
-
-    progres
+if st.sidebar.but
