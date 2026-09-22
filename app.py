@@ -243,8 +243,8 @@ def analyze_one(symbol, data):
         "TP1": tp1,
         "TP2": tp2,
         "SL": sl,
-        "R/R TP1": rr_tp1,
-        "R/R TP2": rr_tp2,
+        "RR_TP1": rr_tp1,
+        "RR_TP2": rr_tp2,
         "Score": score,
         "Close": price,
         "Change%": one_day_change,
@@ -360,10 +360,17 @@ filtered = result_df[
     & (result_df["Score"] >= min_score)
 ].copy()
 
-filtered = filtered.sort_values(
-    ["_tier_order", "Score", "R/R TP2"],
-    ascending=[True, False, False],
-).head(max_results)
+# Pastikan kolom sorting benar-benar ada sebelum sort.
+sort_cols = [c for c in ["_tier_order", "Score", "RR_TP2"] if c in filtered.columns]
+sort_ascending = [True, False, False][:len(sort_cols)]
+
+if sort_cols:
+    filtered = filtered.sort_values(
+        sort_cols,
+        ascending=sort_ascending,
+    )
+
+filtered = filtered.head(max_results)
 
 st.subheader("🎯 Kandidat Untuk Dicek Besok")
 
@@ -378,7 +385,7 @@ else:
             "Kode", "Tier", "Kategori",
             "Entry Low", "Entry High",
             "TP1", "TP2", "SL",
-            "R/R TP1", "R/R TP2",
+            "RR_TP1", "RR_TP2",
             "Score", "RSI", "Vol x",
         ]
     ].copy()
@@ -386,8 +393,13 @@ else:
     for col in ["Entry Low", "Entry High", "TP1", "TP2", "SL"]:
         table[col] = table[col].round(2)
 
-    for col in ["R/R TP1", "R/R TP2"]:
+    for col in ["RR_TP1", "RR_TP2"]:
         table[col] = table[col].map(lambda x: f"{x:.2f}R")
+
+    table = table.rename(columns={
+        "RR_TP1": "R/R TP1",
+        "RR_TP2": "R/R TP2",
+    })
 
     table["RSI"] = table["RSI"].round(1)
     table["Vol x"] = table["Vol x"].map(lambda x: f"{x:.2f}x")
@@ -427,5 +439,5 @@ c3.metric("Watchlist", len(filtered))
 st.caption(
     "⚠️ Ini screening teknikal, bukan jaminan harga naik besok. "
     "OHLCV berasal dari Yahoo Finance melalui yfinance."
-        )
-            
+    )
+    
