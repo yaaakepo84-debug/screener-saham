@@ -3,11 +3,14 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 
-st.set_page_config(page_title="IDX Watchlist Besok", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="IDX Trading Scanner", page_icon="📊", layout="wide")
 
-st.title("🎯 IDX Watchlist Besok")
-st.caption("Yahoo Finance • Daily OHLCV • penyaring kandidat untuk dicek manual besok")
+st.title("📊 IDX Trading Scanner")
+st.caption("Satu web • 3 mode terpisah: Watchlist Besok, BPJS, dan Scalping")
 
+# ============================================================
+# DATA UNIVERSE
+# ============================================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_yahoo_idx_tickers():
     query = yf.EquityQuery("and", [
@@ -44,7 +47,18 @@ def get_yahoo_idx_tickers():
     return sorted(tickers)
 
 
-def atr(df, period=14):
+# ============================================================
+# HELPER TEKNIKAL
+# ============================================================
+def calc_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0).rolling(period).mean()
+    loss = (-delta.clip(upper=0)).rolling(period).mean()
+    rs = gain / loss.replace(0, np.nan)
+    return 100 - (100 / (1 + rs))
+
+
+def calc_atr(df, period=14):
     prev_close = df["Close"].shift(1)
     tr = pd.concat([
         df["High"] - df["Low"],
@@ -54,12 +68,57 @@ def atr(df, period=14):
     return tr.rolling(period).mean()
 
 
-def analyze_one(symbol, data):
-    if data is None or data.empty:
+def get_ticker_frame(raw, symbol):
+    """Ambil satu ticker dari hasil yf.download, aman untuk MultiIndex/non-MultiIndex."""
+    if raw is None or raw.empty:
         return None
 
-    df = data.copy().dropna(subset=["Open", "High", "Low", "Close", "Volume"])
-    if len(df) < 70:
+    yf_symbol = f"{symbol}.JK"
+
+    try:
+        if isinstance(raw.columns, pd.MultiIndex):
+            level0 = raw.columns.get_level_values(0)
+            level1 = raw.columns.get_level_values(1)
+
+            if yf_symbol in level0:
+                return raw[yf_symbol].copy()
+            if yf_symbol in level1:
+                return raw.xs(yf_symbol, axis=1, level=1).copy()
+            return None
+
+        return raw.copy()
+    except Exception:
+        return None
+
+
+def clean_ohlcv(df):
+    if df is None or df.empty:
+        return None
+    needed = ["Open", "High", "Low", "Close", "Volume"]
+    missing = [c for c in needed if c not in df.columns]
+    if missing:
+        return None
+    out = df[needed].copy()
+    for c in needed:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
+    out = out.dropna(subset=needed)
+    return out
+
+
+def safe_num(x):
+    try:
+        return float(x) if np.isfinite(float(x)) else None
+    except Exception:
+        return None
+
+
+# ============================================================
+# MODE 1 — WATCHLIST BESOK
+# Daily only. Tidak dicampur dengan logika intraday.
+# ============================================================
+def analyze_watchlist(symbol, data):
+    df = clean_ohlcv(data)
+    if df is None or len(df) < 70:
         return None
 
     close = df["Close"]
@@ -70,125 +129,88 @@ def analyze_one(symbol, data):
     df["MA20"] = close.rolling(20).mean()
     df["MA50"] = close.rolling(50).mean()
     df["VOL20"] = volume.rolling(20).mean()
-    df["ATR14"] = atr(df, 14)
-
-    delta = close.diff()
-    gain = delta.clip(lower=0).rolling(14).mean()
-    loss = (-delta.clip(upper=0)).rolling(14).mean()
-    rs = gain / loss.replace(0, np.nan)
-    df["RSI14"] = 100 - (100 / (1 + rs))
+    df["ATR14"] = calc_atr(df, 14)
+    df["RSI14"] = calc_rsi(close, 14)
 
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
+    vals = [last["Close"], last["Open"], last["High"], last["Low"],
+            last["MA20"], last["MA50"], last["VOL20"], last["ATR14"], last["RSI14"]]
+    if not all(safe_num(x) is not None for x in vals):
+        return None
+
     price = float(last["Close"])
     open_price = float(last["Open"])
-    high_price = float(last["High"])
-    low_price = float(last["Low"])
     ma20 = float(last["MA20"])
     ma50 = float(last["MA50"])
     vol20 = float(last["VOL20"])
     atr14 = float(last["ATR14"])
     rsi = float(last["RSI14"])
 
-    vals = [price, open_price, high_price, low_price, ma20, ma50, vol20, atr14, rsi]
-    if not all(np.isfinite(x) for x in vals):
-        return None
     if price <= 0 or atr14 <= 0 or vol20 <= 0:
         return None
 
-    volume_ratio = float(last["Volume"]) / vol20
+    vol_x = float(last["Volume"]) / vol20
     bullish = price > open_price
-    body_pct = abs(price - open_price) / price * 100
-
-    high10 = float(high.tail(10).max())
-    low10 = float(low.tail(10).min())
-    high20_prev = float(high.iloc[-21:-1].max())
-    low20_prev = float(low.iloc[-21:-1].min())
-
-    # Trend
     trend_up = price > ma20 > ma50
     trend_ok = price > ma50 and ma20 >= ma50 * 0.995
 
-    # Pullback: harga dekat MA20, tetapi belum rusak trend.
-    dist_ma20_pct = abs(price - ma20) / price * 100
-    near_ma20 = dist_ma20_pct <= 3.0
+    high20_prev = float(high.iloc[-21:-1].max())
+    low10 = float(low.tail(10).min())
+    near_ma20 = abs(price - ma20) / price <= 0.03
+
+    breakout = price >= high20_prev and vol_x >= 1.15
     pullback = trend_ok and near_ma20 and bullish and 42 <= rsi <= 68
-
-    # Breakout: close melewati high 20 hari sebelumnya + volume.
-    breakout = price >= high20_prev and volume_ratio >= 1.15
-
-    # Rebound: menyentuh area low 10 hari / MA20 lalu tutup menguat.
-    near_support = (
-        trend_ok
-        and price <= ma20 * 1.025
-        and price >= ma20 * 0.965
-        and bullish
-        and rsi <= 65
-    )
+    rebound = trend_ok and ma20 * 0.965 <= price <= ma20 * 1.025 and bullish and rsi <= 65
 
     if breakout:
         category = "BO"
     elif pullback:
         category = "PB"
-    elif near_support:
+    elif rebound:
         category = "REB"
     else:
-        category = ""
+        return None
 
-    # Hindari saham yang sudah terlalu panas untuk watchlist besok.
-    one_day_change = (price / float(prev["Close"]) - 1) * 100
-    hot = rsi > 75 or one_day_change > 12
+    change = (price / float(prev["Close"]) - 1) * 100
+    hot = rsi > 75 or change > 12
+    if hot:
+        return None
 
-    # Skor 100.
     score = 0
     reasons = []
-
     if trend_up:
         score += 20
         reasons.append("trend up")
     elif trend_ok:
         score += 10
         reasons.append("di atas MA50")
-
     if ma20 > ma50:
         score += 15
         reasons.append("MA20 > MA50")
-
     if bullish:
         score += 10
         reasons.append("candle bullish")
-
-    if volume_ratio >= 1.0:
+    if vol_x >= 1:
         score += 10
-        reasons.append(f"vol {volume_ratio:.1f}x")
-    if volume_ratio >= 1.5:
+        reasons.append(f"vol {vol_x:.1f}x")
+    if vol_x >= 1.5:
         score += 5
-
-    if breakout:
+    if category == "BO":
         score += 20
         reasons.append("breakout")
-    elif pullback:
+    elif category == "PB":
         score += 15
         reasons.append("pullback MA20")
-    elif near_support:
+    else:
         score += 12
         reasons.append("rebound area support")
-
     if 45 <= rsi <= 68:
         score += 10
     elif 40 <= rsi < 45:
         score += 5
 
-    # Risk filter.
-    if hot:
-        score -= 20
-
-    # Jangan masukkan trend rusak / setup kosong.
-    if not category or not trend_ok or hot:
-        return None
-
-    # Entry zone berbasis ATR, bukan satu harga.
     if category == "BO":
         entry_low = max(price, high20_prev)
         entry_high = entry_low + 0.35 * atr14
@@ -198,133 +220,433 @@ def analyze_one(symbol, data):
         entry_low = max(ma20 - 0.25 * atr14, low10 * 0.995)
         entry_high = center + 0.20 * atr14
         entry_low = min(entry_low, entry_high)
-
-        # Jangan membuat zona terlalu jauh dari harga sekarang.
         if entry_low < price * 0.94:
             entry_low = price * 0.96
         if entry_high < entry_low:
             entry_high = entry_low + 0.20 * atr14
-
         support = min(low10, ma20 - 0.5 * atr14)
 
-    # SL di bawah support/ATR.
     sl = support - 0.30 * atr14
-
-    # Batasi SL agar tidak terlalu dekat atau terlalu jauh.
     if sl >= entry_low:
         sl = entry_low - 0.75 * atr14
     if sl <= entry_low * 0.90:
         sl = entry_low * 0.90
 
-    # Target memakai risk dari entry zone bawah.
     risk = entry_low - sl
     if risk <= 0:
         return None
 
     tp1 = entry_low + 1.25 * risk
     tp2 = entry_low + 2.0 * risk
-
-    # Resistance sebagai target tambahan.
     resistance = float(high.tail(30).max())
     if resistance > tp1 and resistance < tp2:
         tp1 = resistance
 
-    rr_tp1 = (tp1 - entry_low) / risk
-    rr_tp2 = (tp2 - entry_low) / risk
-
-    tier = "A" if score >= 75 else ("B" if score >= 60 else "C")
-
     return {
         "Kode": symbol,
-        "Tier": tier,
+        "Tier": "A" if score >= 75 else ("B" if score >= 60 else "C"),
         "Kategori": category,
         "Entry Low": entry_low,
         "Entry High": entry_high,
         "TP1": tp1,
         "TP2": tp2,
         "SL": sl,
-        "RR_TP1": rr_tp1,
-        "RR_TP2": rr_tp2,
+        "RR_TP1": (tp1 - entry_low) / risk,
+        "RR_TP2": (tp2 - entry_low) / risk,
         "Score": score,
         "Close": price,
-        "Change%": one_day_change,
+        "Change%": change,
         "RSI": rsi,
-        "Vol x": volume_ratio,
+        "Vol x": vol_x,
         "Alasan": ", ".join(reasons),
     }
 
 
 @st.cache_data(ttl=900, show_spinner=False)
-def scan_market(tickers, batch_size=80):
+def scan_daily(tickers, batch_size=80):
     rows = []
-
     for start in range(0, len(tickers), batch_size):
         batch = tickers[start:start + batch_size]
-
         try:
             raw = yf.download(
                 [f"{x}.JK" for x in batch],
-                period="6mo",
-                interval="1d",
-                auto_adjust=False,
-                progress=False,
-                threads=True,
-                group_by="ticker",
+                period="6mo", interval="1d", auto_adjust=False,
+                progress=False, threads=True, group_by="ticker",
             )
         except Exception:
             continue
-
-        if raw is None or raw.empty:
-            continue
-
         for symbol in batch:
-            yf_symbol = f"{symbol}.JK"
             try:
-                if isinstance(raw.columns, pd.MultiIndex):
-                    if yf_symbol not in raw.columns.get_level_values(0):
-                        continue
-                    df = raw[yf_symbol].copy()
-                else:
-                    df = raw.copy()
-
-                result = analyze_one(symbol, df)
-                if result is not None:
+                result = analyze_watchlist(symbol, get_ticker_frame(raw, symbol))
+                if result:
                     rows.append(result)
             except Exception:
                 continue
-
     return pd.DataFrame(rows)
 
 
+# ============================================================
+# MODE 2 — BPJS (BELI PAGI JUAL SORE)
+# Daily sebagai filter dasar, lalu 15M untuk konfirmasi intraday.
+# Indikator BPJS: EMA9/20, VWAP, RSI14, volume, candle.
+# ============================================================
+def analyze_bpjs_daily(symbol, data):
+    df = clean_ohlcv(data)
+    if df is None or len(df) < 60:
+        return None
+
+    close, high, low, volume = df["Close"], df["High"], df["Low"], df["Volume"]
+    df["MA20"] = close.rolling(20).mean()
+    df["MA50"] = close.rolling(50).mean()
+    df["VOL20"] = volume.rolling(20).mean()
+    df["RSI14"] = calc_rsi(close, 14)
+    df["ATR14"] = calc_atr(df, 14)
+
+    last, prev = df.iloc[-1], df.iloc[-2]
+    vals = [last[c] for c in ["Close", "Open", "High", "Low", "MA20", "MA50", "VOL20", "RSI14", "ATR14"]]
+    if not all(safe_num(x) is not None for x in vals):
+        return None
+
+    price = float(last["Close"])
+    ma20, ma50 = float(last["MA20"]), float(last["MA50"])
+    vol_x = float(last["Volume"]) / float(last["VOL20"])
+    rsi = float(last["RSI14"])
+    atr14 = float(last["ATR14"])
+    change = (price / float(prev["Close"]) - 1) * 100
+
+    # BPJS sengaja tidak memakai breakout 20 hari sebagai syarat utama.
+    # Fokus: trend sehat + likuiditas + belum terlalu panas.
+    trend = price > ma20 and ma20 >= ma50 * 0.995
+    not_hot = 42 <= rsi <= 70 and change <= 8
+    liquid = vol_x >= 0.8
+    bullish = float(last["Close"]) > float(last["Open"])
+
+    if not (trend and not_hot and liquid):
+        return None
+
+    score = 0
+    reasons = []
+    if price > ma20:
+        score += 20
+        reasons.append("harga > MA20")
+    if ma20 > ma50:
+        score += 20
+        reasons.append("MA20 > MA50")
+    if bullish:
+        score += 15
+        reasons.append("candle bullish")
+    if vol_x >= 1:
+        score += 15
+        reasons.append(f"vol {vol_x:.1f}x")
+    elif vol_x >= 0.8:
+        score += 8
+        reasons.append(f"vol {vol_x:.1f}x")
+    if 48 <= rsi <= 65:
+        score += 20
+        reasons.append("RSI nyaman")
+    elif 42 <= rsi < 48:
+        score += 10
+    else:
+        score += 8
+
+    # Jangan pilih yang sudah lari terlalu jauh dari MA20.
+    distance = (price / ma20 - 1) * 100
+    if 0 <= distance <= 5:
+        score += 10
+    elif distance > 7:
+        score -= 10
+
+    if score < 60:
+        return None
+
+    entry_low = max(ma20 - 0.20 * atr14, price - 0.25 * atr14)
+    entry_high = min(price + 0.15 * atr14, ma20 + 0.50 * atr14)
+    if entry_high < entry_low:
+        entry_high = entry_low + 0.15 * atr14
+
+    sl = min(float(low.tail(5).min()) - 0.20 * atr14, entry_low - 0.60 * atr14)
+    if sl <= 0:
+        return None
+    risk = entry_low - sl
+    if risk <= 0:
+        return None
+
+    tp1 = entry_low + 1.0 * risk
+    tp2 = entry_low + 1.6 * risk
+
+    return {
+        "Kode": symbol,
+        "Score": score,
+        "Close": price,
+        "Entry Low": entry_low,
+        "Entry High": entry_high,
+        "TP1": tp1,
+        "TP2": tp2,
+        "SL": sl,
+        "RR_TP1": (tp1 - entry_low) / risk,
+        "RR_TP2": (tp2 - entry_low) / risk,
+        "RSI Daily": rsi,
+        "Vol Daily x": vol_x,
+        "Change%": change,
+        "Alasan": ", ".join(reasons),
+    }
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def scan_bpjs_daily(tickers, batch_size=80):
+    rows = []
+    for start in range(0, len(tickers), batch_size):
+        batch = tickers[start:start + batch_size]
+        try:
+            raw = yf.download(
+                [f"{x}.JK" for x in batch],
+                period="6mo", interval="1d", auto_adjust=False,
+                progress=False, threads=True, group_by="ticker",
+            )
+        except Exception:
+            continue
+        for symbol in batch:
+            try:
+                result = analyze_bpjs_daily(symbol, get_ticker_frame(raw, symbol))
+                if result:
+                    rows.append(result)
+            except Exception:
+                continue
+    return pd.DataFrame(rows)
+
+
+def confirm_bpjs_15m(symbol, data):
+    df = clean_ohlcv(data)
+    if df is None or len(df) < 30:
+        return None
+
+    df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
+    df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
+    df["VOL20"] = df["Volume"].rolling(20).mean()
+    df["RSI14"] = calc_rsi(df["Close"], 14)
+
+    last = df.iloc[-1]
+    price = safe_num(last["Close"])
+    ema9 = safe_num(last["EMA9"])
+    ema20 = safe_num(last["EMA20"])
+    rsi = safe_num(last["RSI14"])
+    vol20 = safe_num(last["VOL20"])
+    volume = safe_num(last["Volume"])
+    if None in [price, ema9, ema20, rsi, vol20, volume] or vol20 <= 0:
+        return None
+
+    vol_x = volume / vol20
+    bullish = price > float(last["Open"])
+    ready = price >= ema9 >= ema20 and rsi >= 50 and (bullish or vol_x >= 1.1)
+
+    return {
+        "15M Price": price,
+        "15M EMA9": ema9,
+        "15M EMA20": ema20,
+        "15M RSI": rsi,
+        "15M Vol x": vol_x,
+        "15M Confirm": "READY" if ready else "WAIT",
+    }
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def scan_bpjs_intraday(symbols):
+    rows = []
+    for symbol in symbols:
+        try:
+            raw = yf.download(
+                f"{symbol}.JK", period="30d", interval="15m",
+                auto_adjust=False, progress=False, threads=False,
+            )
+            conf = confirm_bpjs_15m(symbol, get_ticker_frame(raw, symbol))
+            if conf:
+                conf["Kode"] = symbol
+                rows.append(conf)
+        except Exception:
+            continue
+    return pd.DataFrame(rows)
+
+
+# ============================================================
+# MODE 3 — SCALPING
+# Hanya intraday. Daily tidak dipakai untuk sinyal entry.
+# 15M = arah, 5M = trigger. VWAP + EMA9/20 + RSI + volume.
+# ============================================================
+def intraday_metrics(data):
+    df = clean_ohlcv(data)
+    if df is None or len(df) < 30:
+        return None
+
+    df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
+    df["EMA20"] = df["Close"].ewm(span=20, adjust=False).mean()
+    df["VOL20"] = df["Volume"].rolling(20).mean()
+    df["RSI14"] = calc_rsi(df["Close"], 14)
+    df["ATR14"] = calc_atr(df, 14)
+
+    # VWAP per sesi/hari jika index memiliki tanggal.
+    typical = (df["High"] + df["Low"] + df["Close"]) / 3
+    dates = pd.Series(df.index.date, index=df.index)
+    cum_pv = (typical * df["Volume"]).groupby(dates).cumsum()
+    cum_vol = df["Volume"].groupby(dates).cumsum().replace(0, np.nan)
+    df["VWAP"] = cum_pv / cum_vol
+
+    return df
+
+
+def get_latest_day(df):
+    if df is None or df.empty:
+        return None
+    try:
+        day = df.index[-1].date()
+        return df[df.index.date == day].copy()
+    except Exception:
+        return df.tail(80).copy()
+
+
+def analyze_scalping(symbol, data15, data5):
+    d15 = intraday_metrics(data15)
+    d5 = intraday_metrics(data5)
+    if d15 is None or d5 is None:
+        return None
+
+    d15 = get_latest_day(d15)
+    d5 = get_latest_day(d5)
+    if d15 is None or d5 is None or len(d15) < 5 or len(d5) < 10:
+        return None
+
+    a15 = d15.iloc[-1]
+    a5 = d5.iloc[-1]
+
+    p15 = safe_num(a15["Close"])
+    ema915 = safe_num(a15["EMA9"])
+    ema2015 = safe_num(a15["EMA20"])
+    rsi15 = safe_num(a15["RSI14"])
+    vwap15 = safe_num(a15["VWAP"])
+    p5 = safe_num(a5["Close"])
+    ema95 = safe_num(a5["EMA9"])
+    ema205 = safe_num(a5["EMA20"])
+    rsi5 = safe_num(a5["RSI14"])
+    vwap5 = safe_num(a5["VWAP"])
+    vol20_5 = safe_num(a5["VOL20"])
+    vol5 = safe_num(a5["Volume"])
+    atr5 = safe_num(a5["ATR14"])
+
+    vals = [p15, ema915, ema2015, rsi15, vwap15, p5, ema95, ema205,
+            rsi5, vwap5, vol20_5, vol5, atr5]
+    if any(x is None for x in vals) or vol20_5 <= 0 or atr5 <= 0:
+        return None
+
+    vol_x = vol5 / vol20_5
+
+    # Arah 15M.
+    trend15 = p15 > ema915 > ema2015 and p15 > vwap15
+
+    # Trigger 5M: harga di atas EMA/VWAP + RSI sehat + volume meningkat.
+    trigger5 = p5 > ema95 >= ema205 and p5 > vwap5 and 50 <= rsi5 <= 72 and vol_x >= 1.0
+
+    # Jangan mengejar candle yang sudah terlalu panas.
+    if rsi5 > 78:
+        return None
+
+    score = 0
+    reasons = []
+    if trend15:
+        score += 35
+        reasons.append("15M trend up")
+    if p15 > vwap15:
+        score += 10
+        reasons.append("15M > VWAP")
+    if p5 > ema95 >= ema205:
+        score += 20
+        reasons.append("5M EMA9 > EMA20")
+    if p5 > vwap5:
+        score += 10
+        reasons.append("5M > VWAP")
+    if 52 <= rsi5 <= 68:
+        score += 10
+        reasons.append("RSI 5M sehat")
+    elif 50 <= rsi5 < 52:
+        score += 5
+    if vol_x >= 1.5:
+        score += 15
+        reasons.append(f"vol {vol_x:.1f}x")
+    elif vol_x >= 1.0:
+        score += 8
+        reasons.append(f"vol {vol_x:.1f}x")
+
+    if score < 65:
+        return None
+
+    entry_low = max(p5 - 0.15 * atr5, ema95)
+    entry_high = p5 + 0.10 * atr5
+    sl = min(ema205 - 0.20 * atr5, entry_low - 0.65 * atr5)
+    if sl <= 0 or sl >= entry_low:
+        return None
+
+    risk = entry_low - sl
+    tp1 = entry_low + 1.0 * risk
+    tp2 = entry_low + 1.7 * risk
+
+    status = "READY" if trend15 and trigger5 else "WAIT"
+
+    return {
+        "Kode": symbol,
+        "Status": status,
+        "Score": score,
+        "Price": p5,
+        "Entry Low": entry_low,
+        "Entry High": entry_high,
+        "TP1": tp1,
+        "TP2": tp2,
+        "SL": sl,
+        "R/R TP1": (tp1 - entry_low) / risk,
+        "R/R TP2": (tp2 - entry_low) / risk,
+        "RSI 15M": rsi15,
+        "RSI 5M": rsi5,
+        "Vol 5M x": vol_x,
+        "Alasan": ", ".join(reasons),
+    }
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def scan_scalping(symbols):
+    rows = []
+    for symbol in symbols:
+        try:
+            raw15 = yf.download(
+                f"{symbol}.JK", period="30d", interval="15m",
+                auto_adjust=False, progress=False, threads=False,
+            )
+            raw5 = yf.download(
+                f"{symbol}.JK", period="5d", interval="5m",
+                auto_adjust=False, progress=False, threads=False,
+            )
+            result = analyze_scalping(
+                symbol,
+                get_ticker_frame(raw15, symbol),
+                get_ticker_frame(raw5, symbol),
+            )
+            if result:
+                rows.append(result)
+        except Exception:
+            continue
+    return pd.DataFrame(rows)
+
+
+# ============================================================
+# UI
+# ============================================================
 with st.sidebar:
-    st.header("⚙️ Filter Watchlist")
-
-    min_tier = st.selectbox(
-        "Minimal Tier",
-        ["A", "B", "C"],
-        index=0,
+    st.header("⚙️ Mode")
+    mode = st.radio(
+        "Pilih scanner",
+        ["🌙 Watchlist Besok", "🚀 BPJS", "⚡ Scalping"],
     )
+    st.divider()
 
-    categories = st.multiselect(
-        "Setup",
-        ["BO", "PB", "REB"],
-        default=["BO", "PB", "REB"],
-    )
-
-    min_score = st.slider(
-        "Minimal Score",
-        0, 100, 60, 5,
-    )
-
-    max_results = st.slider(
-        "Jumlah saham",
-        5, 50, 20, 5,
-    )
-
-    if st.button("🔄 Scan ulang", use_container_width=True):
+    if st.button("🔄 Refresh data", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
-
 
 try:
     tickers = get_yahoo_idx_tickers()
@@ -337,107 +659,20 @@ if not tickers:
     st.error("Tidak ada ticker Indonesia/JKT yang ditemukan.")
     st.stop()
 
-st.info(
-    f"Universe: **{len(tickers)} saham** dari Yahoo Finance "
-    "(region Indonesia / exchange JKT)."
-)
+st.info(f"Universe: **{len(tickers)} saham** dari Yahoo Finance (Indonesia / JKT).")
 
-with st.spinner(f"Menganalisis {len(tickers)} saham..."):
-    result_df = scan_market(tickers)
+# ------------------------------------------------------------
+# WATCHLIST BESOK
+# ------------------------------------------------------------
+if mode == "🌙 Watchlist Besok":
+    st.subheader("🌙 Watchlist Untuk Besok")
+    st.caption("Daily • BO / PB / REB • Entry Zone • TP1/TP2 • SL")
 
-if result_df.empty:
-    st.warning("Belum ada kandidat yang memenuhi setup.")
-    st.stop()
+    with st.sidebar:
+        st.header("Filter Watchlist")
+        min_tier = st.selectbox("Minimal Tier", ["A", "B", "C"], index=0)
+        categories = st.multiselect("Setup", ["BO", "PB", "REB"], default=["BO", "PB", "REB"])
+        min_score = st.slider("Minimal Score", 0, 100, 60, 5)
+        max_results = st.slider("Jumlah saham", 5, 50, 20, 5)
 
-tier_order = {"A": 0, "B": 1, "C": 2}
-result_df["_tier_order"] = result_df["Tier"].map(tier_order)
-
-allowed_tiers = list(tier_order.keys())[list(tier_order.keys()).index(min_tier):]
-
-filtered = result_df[
-    result_df["Tier"].isin(allowed_tiers)
-    & result_df["Kategori"].isin(categories)
-    & (result_df["Score"] >= min_score)
-].copy()
-
-# Pastikan kolom sorting benar-benar ada sebelum sort.
-sort_cols = [c for c in ["_tier_order", "Score", "RR_TP2"] if c in filtered.columns]
-sort_ascending = [True, False, False][:len(sort_cols)]
-
-if sort_cols:
-    filtered = filtered.sort_values(
-        sort_cols,
-        ascending=sort_ascending,
-    )
-
-filtered = filtered.head(max_results)
-
-st.subheader("🎯 Kandidat Untuk Dicek Besok")
-
-if filtered.empty:
-    st.warning(
-        "Tidak ada kandidat yang memenuhi filter. "
-        "Coba turunkan Minimal Score atau pilih Tier B/C."
-    )
-else:
-    table = filtered[
-        [
-            "Kode", "Tier", "Kategori",
-            "Entry Low", "Entry High",
-            "TP1", "TP2", "SL",
-            "RR_TP1", "RR_TP2",
-            "Score", "RSI", "Vol x",
-        ]
-    ].copy()
-
-    for col in ["Entry Low", "Entry High", "TP1", "TP2", "SL"]:
-        table[col] = table[col].round(2)
-
-    for col in ["RR_TP1", "RR_TP2"]:
-        table[col] = table[col].map(lambda x: f"{x:.2f}R")
-
-    table = table.rename(columns={
-        "RR_TP1": "R/R TP1",
-        "RR_TP2": "R/R TP2",
-    })
-
-    table["RSI"] = table["RSI"].round(1)
-    table["Vol x"] = table["Vol x"].map(lambda x: f"{x:.2f}x")
-
-    st.dataframe(
-        table,
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    st.caption(
-        "Entry adalah zona, bukan harga wajib. Kandidat tetap perlu "
-        "dikonfirmasi manual saat market buka, terutama TF 15M/5M."
-    )
-
-    with st.expander("📌 Alasan tiap kandidat"):
-        reason_table = filtered[
-            ["Kode", "Tier", "Kategori", "Close", "Change%", "Alasan"]
-        ].copy()
-        reason_table["Close"] = reason_table["Close"].round(2)
-        reason_table["Change%"] = reason_table["Change%"].map(lambda x: f"{x:+.2f}%")
-        st.dataframe(reason_table, use_container_width=True, hide_index=True)
-
-    csv = filtered.drop(columns=["_tier_order"]).to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "⬇️ Download Watchlist CSV",
-        data=csv,
-        file_name="watchlist_besok.csv",
-        mime="text/csv",
-    )
-
-c1, c2, c3 = st.columns(3)
-c1.metric("Universe", len(tickers))
-c2.metric("Lolos scan", len(result_df))
-c3.metric("Watchlist", len(filtered))
-
-st.caption(
-    "⚠️ Ini screening teknikal, bukan jaminan harga naik besok. "
-    "OHLCV berasal dari Yahoo Finance melalui yfinance."
-    )
-    
+    with st.s
